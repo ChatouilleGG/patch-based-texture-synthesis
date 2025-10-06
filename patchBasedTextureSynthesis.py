@@ -15,7 +15,20 @@ from IPython.display import display,clear_output
 
 class patchBasedTextureSynthesis:
     
-    def __init__(self, exampleMapPath, in_outputPath, in_outputSize, in_patchSize, in_overlapSize, in_windowStep = 5, in_mirror_hor = True, in_mirror_vert = True, in_shapshots = True, in_live_updates = False):
+    def __init__(self,
+        exampleMapPath,
+        in_outputPath,
+        in_outputSize,
+        in_patchSize,
+        in_overlapSize,
+        in_windowStep = 5,
+        in_mirror_hor = True,
+        in_mirror_vert = True,
+        in_shapshots = True,
+        in_live_updates = False,
+        in_tiling_hor = False,
+        in_tiling_vert = False
+    ):
         self.exampleMap = self.loadExampleMap(exampleMapPath)
         self.snapshots = in_shapshots
         self.outputPath = in_outputPath
@@ -29,6 +42,9 @@ class patchBasedTextureSynthesis:
         self.total_patches_count = 0 #excluding mirrored versions
         self.windowStep = 5
         self.iter = 0
+
+        self.tiling_hor = in_tiling_hor
+        self.tiling_vert = in_tiling_vert
         
         self.checkIfDirectoryExists() #check if output directory exists
         self.examplePatches = self.prepareExamplePatches()
@@ -39,6 +55,10 @@ class patchBasedTextureSynthesis:
         self.PARM_truncation = 0.8
         self.PARM_attenuation = 2
 
+        numPatches = np.shape(self.filledMap)
+        self.numRows = numPatches[0]
+        self.numCols = numPatches[1]
+
     def checkIfDirectoryExists(self):
         if not os.path.exists(self.outputPath):
             os.makedirs(self.outputPath)
@@ -48,14 +68,8 @@ class patchBasedTextureSynthesis:
         #resolve all unresolved patches
         for i in range(np.sum(1-self.filledMap).astype(int)):
             self.resolveNext()
-            
-        if not self.snapshots:
-            img = Image.fromarray(np.uint8(self.canvas*255))
-            img = img.resize((self.outputSize[0], self.outputSize[1]), resample=0, box=None)
-            img.save(self.outputPath + 'out.jpg')
-        else:
-            self.iter += 1
-            self.visualize([0,0], [], [], showCandidates=False)
+        #save final image(s)
+        self.saveFinal()
             
     def saveParams(self):
         #write
@@ -72,17 +86,34 @@ class patchBasedTextureSynthesis:
         #get overlap areas of the patch we want to resolve
         overlapArea_Top = self.getOverlapAreaTop(coord)
         overlapArea_Left = self.getOverlapAreaLeft(coord)
-        #find most similar patch from the examples
-        dist, ind = self.findMostSimilarPatches(overlapArea_Top, overlapArea_Left, coord)
-        
-        if self.mirror_hor or self.mirror_vert:
-            #check that top and left neighbours are not mirrors
-            dist, ind = self.checkForMirrors(dist, ind, coord)
 
-        #choose random valid patch
-        probabilities = self.distances2probability(dist, self.PARM_truncation, self.PARM_attenuation)
-        chosenPatchId = np.random.choice(ind, 1, p=probabilities)
+        #handle vertical tiling
+        if self.tiling_vert and coord[0] > 0 and coord[0] == self.numRows-1:
+            print("Last row - match first row for vertical tiling")
+            chosenPatchId = np.random.choice([int(self.idMap[0, coord[1]])], 1)
+            ind = []
+
+        #handle horizontal tiling
+        elif self.tiling_hor and coord[1] > 0 and coord[1] == self.numCols-1:
+            print("Last column - match first column for horizontal tiling")
+            chosenPatchId = np.random.choice([int(self.idMap[coord[0], 0])], 1)
+            ind = []
+
+        #default case
+        else:
+            #find most similar patch from the examples
+            dist, ind = self.findMostSimilarPatches(overlapArea_Top, overlapArea_Left, coord)
         
+            if self.mirror_hor or self.mirror_vert:
+                #check that top and left neighbours are not mirrors
+                dist, ind = self.checkForMirrors(dist, ind, coord)
+
+            #choose random valid patch
+            probabilities = self.distances2probability(dist, self.PARM_truncation, self.PARM_attenuation)
+            chosenPatchId = np.random.choice(ind, 1, p=probabilities)
+
+        print("chosenPatchId", chosenPatchId)
+
         #update canvas
         blend_top = (overlapArea_Top is not None)
         blend_left = (overlapArea_Left is not None)
@@ -124,7 +155,21 @@ class patchBasedTextureSynthesis:
             img = Image.fromarray(np.uint8(vis*255))
             img = img.resize((self.outputSize[0]*2, self.outputSize[1]), resample=0, box=None)
             img.save(self.outputPath + 'out' + str(self.iter) + '.jpg')
-        
+
+    def saveFinal(self):
+        img = Image.fromarray(np.uint8(self.canvas*255))
+        img.save(self.outputPath+'result.jpg')
+
+        resized = img.resize(self.outputSize, resample=0, box=None)
+        resized.save(self.outputPath+'result_resized.jpg')
+
+        if self.tiling_hor or self.tiling_vert:
+            crop = self.patchSize/2 + self.overlapSize
+            cropRect = (crop, crop, img.width-crop, img.height-crop)
+            print("Cropping for Tiling", cropRect)
+            tiling = img.crop(cropRect)
+            tiling.save(self.outputPath+'result_tiling.jpg')
+
     def hightlightPatchCandidates(self, chosenPatchId, nonchosenPatchId):
         
         result = np.copy(self.exampleMap)
@@ -226,7 +271,7 @@ class patchBasedTextureSynthesis:
 
         
     def distances2probability(self, distances, PARM_truncation, PARM_attenuation):
-        probabilities = 1 - distances / np.max(distances)  
+        probabilities = 1 - distances / np.max(distances)
         probabilities *= (probabilities > PARM_truncation)
         probabilities = pow(probabilities, PARM_attenuation) #attenuate the values
         #check if we didn't truncate everything!
@@ -238,7 +283,7 @@ class patchBasedTextureSynthesis:
         #failsafe
         if np.sum(probabilities) == 0:
             probabilities = [1]
-        probabilities /= np.sum(probabilities) #normalize so they add up to one  
+        probabilities /= np.sum(probabilities) #normalize so they add up to one
         return probabilities
         
     def getOverlapAreaTop(self, coord):
@@ -290,9 +335,11 @@ class patchBasedTextureSynthesis:
     def initFirstPatch(self):
         #grab a random block 
         patchId = randint(0, np.shape(self.examplePatches)[0])
+        print("Patch", 0, [0,0])
+        print("chosenPatchId", patchId)
         #mark out fill map
         self.filledMap[0, 0] = 1
-        self.idMap[0, 0] = patchId % self.total_patches_count
+        self.idMap[0, 0] = patchId # % self.total_patches_count
         #update canvas
         self.updateCanvas(patchId, 0, 0, False, False)
         #visualize
@@ -342,7 +389,7 @@ class patchBasedTextureSynthesis:
         idMap = np.zeros((num_patches_X, num_patches_Y)) - 1 #stores patches id
         
         print("modified output size: ", np.shape(canvas))
-        print("number of patches: ", np.shape(filledMap)[0])
+        print("number of patches: ", np.shape(filledMap))
 
         return canvas, filledMap, idMap
 
