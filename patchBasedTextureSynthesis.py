@@ -11,11 +11,11 @@ from skimage.util.shape import view_as_windows
 from skimage import io
 
 from PIL import Image, ImageDraw
-from IPython.display import clear_output
+from IPython.display import display,clear_output
 
 class patchBasedTextureSynthesis:
     
-    def __init__(self, exampleMapPath, in_outputPath, in_outputSize, in_patchSize, in_overlapSize, in_windowStep = 5, in_mirror_hor = True, in_mirror_vert = True, in_shapshots = True):
+    def __init__(self, exampleMapPath, in_outputPath, in_outputSize, in_patchSize, in_overlapSize, in_windowStep = 5, in_mirror_hor = True, in_mirror_vert = True, in_shapshots = True, in_live_updates = False):
         self.exampleMap = self.loadExampleMap(exampleMapPath)
         self.snapshots = in_shapshots
         self.outputPath = in_outputPath
@@ -24,6 +24,8 @@ class patchBasedTextureSynthesis:
         self.overlapSize = in_overlapSize
         self.mirror_hor = in_mirror_hor
         self.mirror_vert = in_mirror_vert
+        self.live_updates = in_live_updates
+
         self.total_patches_count = 0 #excluding mirrored versions
         self.windowStep = 5
         self.iter = 0
@@ -52,6 +54,7 @@ class patchBasedTextureSynthesis:
             img = img.resize((self.outputSize[0], self.outputSize[1]), resample=0, box=None)
             img.save(self.outputPath + 'out.jpg')
         else:
+            self.iter += 1
             self.visualize([0,0], [], [], showCandidates=False)
             
     def saveParams(self):
@@ -62,7 +65,10 @@ class patchBasedTextureSynthesis:
         
     def resolveNext(self):
         #coordinate of the next one to resolve
-        coord = self.idCoordTo2DCoord(np.sum(self.filledMap), np.shape(self.filledMap)) #get 2D coordinate of next to resolve patch
+        id = np.sum(self.filledMap)
+        coord = self.idCoordTo2DCoord(id, np.shape(self.filledMap)) #get 2D coordinate of next to resolve patch
+        print("Patch", int(id), coord)
+
         #get overlap areas of the patch we want to resolve
         overlapArea_Top = self.getOverlapAreaTop(coord)
         overlapArea_Left = self.getOverlapAreaLeft(coord)
@@ -87,9 +93,8 @@ class patchBasedTextureSynthesis:
         self.idMap[coord[0], coord[1]] = chosenPatchId
         
         #visualize
-        self.visualize(coord, chosenPatchId, ind)
-        
         self.iter += 1
+        self.visualize(coord, chosenPatchId, ind)
         
     def visualize(self, coord, chosenPatchId, nonchosenPatchId, showCandidates = True):
         #full visualization includes both example and generated img
@@ -110,9 +115,10 @@ class patchBasedTextureSynthesis:
         vis[offset_h:offset_h+h, canvasSize[1]+offset_w:canvasSize[1]+offset_w+w] = exampleResized
         
         #show live update
-        plt.imshow(vis)
-        clear_output(wait=True)
-        display(plt.show())
+        if self.live_updates:
+            plt.imshow(vis)
+            clear_output(wait=True)
+            display(plt.show())
         
         if self.snapshots:
             img = Image.fromarray(np.uint8(vis*255))
@@ -220,7 +226,6 @@ class patchBasedTextureSynthesis:
 
         
     def distances2probability(self, distances, PARM_truncation, PARM_attenuation):
-
         probabilities = 1 - distances / np.max(distances)  
         probabilities *= (probabilities > PARM_truncation)
         probabilities = pow(probabilities, PARM_attenuation) #attenuate the values
@@ -230,8 +235,10 @@ class patchBasedTextureSynthesis:
             probabilities = 1 - distances / np.max(distances) 
             probabilities *= (probabilities > PARM_truncation*np.max(probabilities)) # truncate the values (we want top truncate%)
             probabilities = pow(probabilities, PARM_attenuation)
+        #failsafe
+        if np.sum(probabilities) == 0:
+            probabilities = [1]
         probabilities /= np.sum(probabilities) #normalize so they add up to one  
-
         return probabilities
         
     def getOverlapAreaTop(self, coord):
